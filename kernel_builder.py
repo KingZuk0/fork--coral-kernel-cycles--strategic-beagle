@@ -385,7 +385,6 @@ class KernelBuilder:
             i = vi * vec_step
             i_const = self.scratch_const(i)
 
-            # Load 8 indices and 8 values (contiguous) using vload
             body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
             body.append(("load", ("vload", idx_vec, tmp_addr)))
 
@@ -416,54 +415,39 @@ class KernelBuilder:
                 body.append(("valu", ("<", mask_vec, idx_vec, n_nodes_vec)))
                 body.append(("valu", ("*", idx_vec, idx_vec, mask_vec)))
 
-            # Store back using addresses still in tmp_addr/tmp_addr2 from vload prologue
             body.append(("store", ("vstore", tmp_addr, idx_vec)))
             body.append(("store", ("vstore", tmp_addr2, val_vec)))
 
-            # Tail scalar fallback for remaining elements
-            if tail:
-                start = vec_iters * vec_step
-                for i in range(start, start + tail):
-                    i_const = self.scratch_const(i)
-                    # idx = mem[inp_indices_p + i]
-                    body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
-                    body.append(("load", ("load", tmp_idx_tail, tmp_addr)))
+        if tail:
+            start = vec_iters * vec_step
+            for i in range(start, start + tail):
+                i_const = self.scratch_const(i)
+                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
+                body.append(("load", ("load", tmp_idx_tail, tmp_addr)))
 
-                    # val = mem[inp_values_p + i]
-                    body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], i_const)))
-                    body.append(("load", ("load", tmp_val_tail, tmp_addr2)))
+                body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], i_const)))
+                body.append(("load", ("load", tmp_val_tail, tmp_addr2)))
 
-                    # Process rounds in scalar registers
-                    for r in range(rounds):
-                        # node_val = mem[forest_values_p + idx]
-                        body.append(
-                            ("alu", ("+", tmp_addr, self.scratch["forest_values_p"], tmp_idx_tail))
-                        )
-                        body.append(("load", ("load", tmp_node_val_tail, tmp_addr)))
+                for r in range(rounds):
+                    body.append(("alu", ("+", tmp_addr, self.scratch["forest_values_p"], tmp_idx_tail)))
+                    body.append(("load", ("load", tmp_node_val_tail, tmp_addr)))
 
-                        # val = myhash(val ^ node_val)
-                        body.append(("alu", ("^", tmp_val_tail, tmp_val_tail, tmp_node_val_tail)))
-                        body.extend(self.build_hash(tmp_val_tail, h_tmp1, h_tmp2, r, i))
+                    body.append(("alu", ("^", tmp_val_tail, tmp_val_tail, tmp_node_val_tail)))
+                    body.extend(self.build_hash(tmp_val_tail, h_tmp1, h_tmp2, r, i))
 
-                        # idx = 2*idx + (1 if val % 2 == 0 else 2)
-                        body.append(("alu", ("%", tmp_idx_tail, tmp_val_tail, two_const)))
-                        body.append(("alu", ("+", tmp3_tail, tmp_idx_tail, one_const)))
-                        body.append(("alu", ("*", tmp_idx_tail, tmp_idx_tail, two_const)))
-                        body.append(("alu", ("+", tmp_idx_tail, tmp_idx_tail, tmp3_tail)))
+                    body.append(("alu", ("%", tmp_idx_tail, tmp_val_tail, two_const)))
+                    body.append(("alu", ("+", tmp3_tail, tmp_idx_tail, one_const)))
+                    body.append(("alu", ("*", tmp_idx_tail, tmp_idx_tail, two_const)))
+                    body.append(("alu", ("+", tmp_idx_tail, tmp_idx_tail, tmp3_tail)))
 
-                        # idx = 0 if idx >= n_nodes else idx
-                        body.append(
-                            ("alu", ("<", tmp_idx_tail, tmp_idx_tail, self.scratch["n_nodes"]))
-                        )
-                        body.append(("alu", ("*", tmp_idx_tail, tmp_idx_tail, tmp_idx_tail)))
+                    body.append(("alu", ("<", tmp_idx_tail, tmp_idx_tail, self.scratch["n_nodes"])))
+                    body.append(("alu", ("*", tmp_idx_tail, tmp_idx_tail, tmp_idx_tail)))
 
-                    # mem[inp_indices_p + i] = idx
-                    body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
-                    body.append(("store", ("store", tmp_addr, tmp_idx_tail)))
+                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
+                body.append(("store", ("store", tmp_addr, tmp_idx_tail)))
 
-                    # mem[inp_values_p + i] = val
-                    body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], i_const)))
-                    body.append(("store", ("store", tmp_addr2, tmp_val_tail)))
+                body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], i_const)))
+                body.append(("store", ("store", tmp_addr2, tmp_val_tail)))
 
         # Pack into VLIW instructions
         # Include any pending slots (constants, broadcasts, header loads) so
