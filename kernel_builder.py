@@ -420,6 +420,7 @@ class KernelBuilder:
                 body.append(("valu", ("<", mask_vec, idx_vec, n_nodes_vec)))
                 body.append(("flow", ("vselect", idx_vec, mask_vec, idx_vec, zero_vec)))
 
+            # Store back using addresses still in tmp_addr/tmp_addr2 from vload prologue
             body.append(("store", ("vstore", tmp_addr, idx_vec)))
             body.append(("store", ("vstore", tmp_addr2, val_vec)))
 
