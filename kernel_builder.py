@@ -220,8 +220,6 @@ class KernelBuilder:
                 # forbid if this slot writes something already written in this instr
                 if writes & curr_writes:
                     break
-                if writes & curr_reads:
-                    break
                 # all good; add
                 instr.setdefault(engine, []).append(slot)
                 used[engine] = used.get(engine, 0) + 1
@@ -304,8 +302,8 @@ class KernelBuilder:
         """Build vectorized hash stages operating on 8 lanes.
 
         Uses valu operations and vbroadcasted constant vectors.
-        Stages use multiply_add(val, ones, c) == val + c where applicable to vary
-        valu slot mix for the packer (same semantics as binary +).
++ stages use multiply_add(val, ones, c) == val + c to vary valu slot mix for
+        the packer (same semantics as binary +).
         """
         slots = []
         ones = self.scratch_const_vector(1)
@@ -406,10 +404,6 @@ class KernelBuilder:
         tmp3_tail = self.alloc_scratch("tmp3_tail")
         one_const = self.scratch_const(1)
         two_const = self.scratch_const(2)
-        tmp_i0 = self.alloc_scratch("tmp_i0")
-        tmp_v0 = self.alloc_scratch("tmp_v0")
-        tmp_i1 = self.alloc_scratch("tmp_i1")
-        tmp_v1 = self.alloc_scratch("tmp_v1")
 
         def emit_vec_round(idx_v, val_v, node_addr_v, node_val_v, h1, h2, mod_v, add1_v, mask_v):
             body.append(("valu", ("+", node_addr_v, idx_v, forest_base_vec)))
@@ -512,3 +506,6 @@ class KernelBuilder:
 
         # Clear pending slots now that they've been emitted
         self.pending_slots = []
+
+        # Final pause
+        self.instrs.append({"flow": [("pause",)]})
