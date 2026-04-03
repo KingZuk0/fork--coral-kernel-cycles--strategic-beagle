@@ -302,7 +302,7 @@ class KernelBuilder:
         """Build vectorized hash stages operating on 8 lanes.
 
         Uses valu operations and vbroadcasted constant vectors.
-+ stages use multiply_add(val, ones, c) == val + c to vary valu slot mix for
+        Hash stages with op + use multiply_add(val, ones, c) == val + c to vary valu slot mix for
         the packer (same semantics as binary +).
         """
         slots = []
