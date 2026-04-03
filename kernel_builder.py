@@ -354,7 +354,7 @@ class KernelBuilder:
 
         # Broadcasted vector constants
         one_vec = self.scratch_const_vector(1, name="one_vec")
-        self.scratch_const_vector(2, name="two_vec")
+        two_vec = self.scratch_const_vector(2, name="two_vec")
 
         # Broadcast scalar header values into vector registers for comparisons/adds
         n_nodes_vec = self.alloc_scratch("n_nodes_vec", length=8)
@@ -413,19 +413,14 @@ class KernelBuilder:
                 body.append(("valu", ("&", mod_vec, val_vec, one_vec)))
                 body.append(("valu", ("+", add1_vec, mod_vec, one_vec)))
 
-                # idx = 2*idx + add1_vec (use shift left to compute *2)
-                body.append(("valu", ("<<", idx_vec, idx_vec, one_vec)))
-                body.append(("valu", ("+", idx_vec, idx_vec, add1_vec)))
+                # idx = 2*idx + add1_vec via fused multiply_add (idx*two + add1)
+                body.append(("valu", ("multiply_add", idx_vec, idx_vec, two_vec, add1_vec)))
 
                 # idx = idx if idx < n_nodes else 0 -> use vselect to avoid extra multiply valu
                 body.append(("valu", ("<", mask_vec, idx_vec, n_nodes_vec)))
                 body.append(("flow", ("vselect", idx_vec, mask_vec, idx_vec, zero_vec)))
 
-            # Store updated indices and values back (contiguous) using vstore
-            body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
             body.append(("store", ("vstore", tmp_addr, idx_vec)))
-
-            body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], i_const)))
             body.append(("store", ("vstore", tmp_addr2, val_vec)))
 
             # Tail scalar fallback for remaining elements
