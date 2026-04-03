@@ -412,7 +412,7 @@ class KernelBuilder:
                 # idx = 2*idx + add1_vec via fused multiply_add (idx*two + add1)
                 body.append(("valu", ("multiply_add", idx_vec, idx_vec, two_vec, add1_vec)))
 
-                # idx = idx if idx < n_nodes else 0 via mask * idx (all valu; avoids flow slot)
+                # idx = idx if idx < n_nodes else 0 via mask*idx (valu only; avoids flow vselect)
                 body.append(("valu", ("<", mask_vec, idx_vec, n_nodes_vec)))
                 body.append(("valu", ("*", idx_vec, idx_vec, mask_vec)))
 
