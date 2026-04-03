@@ -504,6 +504,3 @@ class KernelBuilder:
 
         # Clear pending slots now that they've been emitted
         self.pending_slots = []
-
-        # Final pause
-        self.instrs.append({"flow": [("pause",)]})
