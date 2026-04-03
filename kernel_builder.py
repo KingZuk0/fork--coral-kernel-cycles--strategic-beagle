@@ -469,9 +469,8 @@ class KernelBuilder:
             for i in range(start, start + tail):
                 i_const = self.scratch_const(i)
                 body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
-                body.append(("load", ("load", tmp_idx_tail, tmp_addr)))
-
                 body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], i_const)))
+                body.append(("load", ("load", tmp_idx_tail, tmp_addr)))
                 body.append(("load", ("load", tmp_val_tail, tmp_addr2)))
 
                 for r in range(rounds):
