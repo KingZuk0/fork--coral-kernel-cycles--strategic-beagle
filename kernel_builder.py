@@ -302,7 +302,7 @@ class KernelBuilder:
         """Build vectorized hash stages operating on 8 lanes.
 
         Uses valu operations and vbroadcasted constant vectors.
-        Hash stages with op + use multiply_add(val, ones, c) == val + c to vary valu slot mix for
++ stages use multiply_add(val, ones, c) == val + c to vary valu slot mix for
         the packer (same semantics as binary +).
         """
         slots = []
@@ -348,8 +348,10 @@ class KernelBuilder:
         ]
         for v, _ in init_spec:
             self.alloc_scratch(v, 1)
+        header_tmp = self.alloc_scratch("header_tmp")
         for v, idx in init_spec:
-            self.add("load", ("load", self.scratch[v], self.scratch_const(idx)))
+            self.add("load", ("const", header_tmp, idx))
+            self.add("load", ("load", self.scratch[v], header_tmp))
 
         def alloc_v8(name):
             return self.alloc_scratch(name, length=8)
@@ -410,7 +412,7 @@ class KernelBuilder:
             body.append(("valu", ("^", val_v, val_v, node_val_v)))
             body.extend(self.build_hash_vector(val_v, h1, h2))
             body.append(("valu", ("&", mod_v, val_v, one_vec)))
-            body.append(("valu", ("multiply_add", add1_v, mod_v, one_vec, one_vec)))
+            body.append(("valu", ("+", add1_v, mod_v, one_vec)))
             body.append(("valu", ("multiply_add", idx_v, idx_v, two_vec, add1_v)))
             body.append(("valu", ("<", mask_v, idx_v, n_nodes_vec)))
             body.append(("valu", ("*", idx_v, idx_v, mask_v)))
@@ -432,12 +434,12 @@ class KernelBuilder:
                 body.append(("load", ("vload", val_b, tmp_v1)))
                 for _r in range(rounds):
                     emit_vec_round(
-                        idx_b, val_b, node_addr_b, node_val_b,
-                        hash_tmp1_b, hash_tmp2_b, mod_b, add1_b, mask_b,
-                    )
-                    emit_vec_round(
                         idx_a, val_a, node_addr_a, node_val_a,
                         hash_tmp1_a, hash_tmp2_a, mod_a, add1_a, mask_a,
+                    )
+                    emit_vec_round(
+                        idx_b, val_b, node_addr_b, node_val_b,
+                        hash_tmp1_b, hash_tmp2_b, mod_b, add1_b, mask_b,
                     )
                 body.append(("store", ("vstore", tmp_i0, idx_a)))
                 body.append(("store", ("vstore", tmp_v0, val_a)))
@@ -456,7 +458,9 @@ class KernelBuilder:
                         idx_a, val_a, node_addr_a, node_val_a,
                         hash_tmp1_a, hash_tmp2_a, mod_a, add1_a, mask_a,
                     )
+                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], ic)))
                 body.append(("store", ("vstore", tmp_addr, idx_a)))
+                body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], ic)))
                 body.append(("store", ("vstore", tmp_addr2, val_a)))
                 vi += 1
 
