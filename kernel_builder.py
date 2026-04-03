@@ -220,6 +220,8 @@ class KernelBuilder:
                 # forbid if this slot writes something already written in this instr
                 if writes & curr_writes:
                     break
+                if writes & curr_reads:
+                    break
                 # all good; add
                 instr.setdefault(engine, []).append(slot)
                 used[engine] = used.get(engine, 0) + 1
@@ -302,8 +304,8 @@ class KernelBuilder:
         """Build vectorized hash stages operating on 8 lanes.
 
         Uses valu operations and vbroadcasted constant vectors.
-+ stages use multiply_add(val, ones, c) == val + c to vary valu slot mix for
-        the packer (same semantics as binary +).
+        Stages use multiply_add(val, ones, c) == val + c where applicable to vary
+        valu slot mix for the packer (same semantics as binary +).
         """
         slots = []
         ones = self.scratch_const_vector(1)
@@ -331,6 +333,10 @@ class KernelBuilder:
         # Scalars used for occasional scalar ops
         tmp_addr = self.alloc_scratch("tmp_addr")
         tmp_addr2 = self.alloc_scratch("tmp_addr2")
+        tmp_i0 = self.alloc_scratch("tmp_i0")
+        tmp_v0 = self.alloc_scratch("tmp_v0")
+        tmp_i1 = self.alloc_scratch("tmp_i1")
+        tmp_v1 = self.alloc_scratch("tmp_v1")
 
         # Load initial values from memory header into reserved scratches.
         # mem[3] is forest_height; this kernel does not use it — skip load/slots.
@@ -400,6 +406,10 @@ class KernelBuilder:
         tmp3_tail = self.alloc_scratch("tmp3_tail")
         one_const = self.scratch_const(1)
         two_const = self.scratch_const(2)
+        tmp_i0 = self.alloc_scratch("tmp_i0")
+        tmp_v0 = self.alloc_scratch("tmp_v0")
+        tmp_i1 = self.alloc_scratch("tmp_i1")
+        tmp_v1 = self.alloc_scratch("tmp_v1")
 
         def emit_vec_round(idx_v, val_v, node_addr_v, node_val_v, h1, h2, mod_v, add1_v, mask_v):
             body.append(("valu", ("+", node_addr_v, idx_v, forest_base_vec)))
@@ -458,9 +468,7 @@ class KernelBuilder:
                         idx_a, val_a, node_addr_a, node_val_a,
                         hash_tmp1_a, hash_tmp2_a, mod_a, add1_a, mask_a,
                     )
-                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], ic)))
                 body.append(("store", ("vstore", tmp_addr, idx_a)))
-                body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], ic)))
                 body.append(("store", ("vstore", tmp_addr2, val_a)))
                 vi += 1
 
