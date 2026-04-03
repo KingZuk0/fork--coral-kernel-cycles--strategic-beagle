@@ -362,10 +362,6 @@ class KernelBuilder:
         forest_base_vec = self.alloc_scratch("forest_base_vec", length=8)
         self.add("valu", ("vbroadcast", forest_base_vec, self.scratch["forest_values_p"]))
 
-        # Pre-create a zero vector constant for vselect operations to avoid
-        # re-emitting the vbroadcast inside the inner rounds loop.
-        zero_vec = self.scratch_const_vector(0)
-
         body = []
 
         # Vectorized main loop: process 8 elements per iteration
@@ -416,9 +412,9 @@ class KernelBuilder:
                 # idx = 2*idx + add1_vec via fused multiply_add (idx*two + add1)
                 body.append(("valu", ("multiply_add", idx_vec, idx_vec, two_vec, add1_vec)))
 
-                # idx = idx if idx < n_nodes else 0 -> use vselect to avoid extra multiply valu
+                # idx = idx if idx < n_nodes else 0 via mask * idx (all valu; avoids flow slot)
                 body.append(("valu", ("<", mask_vec, idx_vec, n_nodes_vec)))
-                body.append(("flow", ("vselect", idx_vec, mask_vec, idx_vec, zero_vec)))
+                body.append(("valu", ("*", idx_vec, idx_vec, mask_vec)))
 
             # Store back using addresses still in tmp_addr/tmp_addr2 from vload prologue
             body.append(("store", ("vstore", tmp_addr, idx_vec)))
