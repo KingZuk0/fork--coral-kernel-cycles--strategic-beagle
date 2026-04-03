@@ -302,13 +302,22 @@ class KernelBuilder:
         """Build vectorized hash stages operating on 8 lanes.
 
         Uses valu operations and vbroadcasted constant vectors.
++ stages use multiply_add(val, ones, c) == val + c to vary valu slot mix for
+        the packer (same semantics as binary +).
         """
         slots = []
+        ones = self.scratch_const_vector(1)
         for op1, val1, op2, op3, val3 in HASH_STAGES:
             c1 = self.scratch_const_vector(val1)
             c3 = self.scratch_const_vector(val3)
-            slots.append(("valu", (op1, tmp1_vec, val_vec_addr, c1)))
-            slots.append(("valu", (op3, tmp2_vec, val_vec_addr, c3)))
+            if op1 == "+":
+                slots.append(("valu", ("multiply_add", tmp1_vec, val_vec_addr, ones, c1)))
+            else:
+                slots.append(("valu", (op1, tmp1_vec, val_vec_addr, c1)))
+            if op3 == "+":
+                slots.append(("valu", ("multiply_add", tmp2_vec, val_vec_addr, ones, c3)))
+            else:
+                slots.append(("valu", (op3, tmp2_vec, val_vec_addr, c3)))
             slots.append(("valu", (op2, val_vec_addr, tmp1_vec, tmp2_vec)))
         return slots
 
@@ -323,34 +332,45 @@ class KernelBuilder:
         tmp_addr = self.alloc_scratch("tmp_addr")
         tmp_addr2 = self.alloc_scratch("tmp_addr2")
 
-        # Load initial values from memory header into reserved scratches
-        init_vars = [
-            "rounds",
-            "n_nodes",
-            "batch_size",
-            "forest_height",
-            "forest_values_p",
-            "inp_indices_p",
-            "inp_values_p",
+        # Load initial values from memory header into reserved scratches.
+        # mem[3] is forest_height; this kernel does not use it — skip load/slots.
+        init_spec = [
+            ("rounds", 0),
+            ("n_nodes", 1),
+            ("batch_size", 2),
+            ("forest_values_p", 4),
+            ("inp_indices_p", 5),
+            ("inp_values_p", 6),
         ]
-        for v in init_vars:
+        for v, _ in init_spec:
             self.alloc_scratch(v, 1)
-        # use a temp scalar to load the header
         header_tmp = self.alloc_scratch("header_tmp")
-        for i, v in enumerate(init_vars):
-            self.add("load", ("const", header_tmp, i))
+        for v, idx in init_spec:
+            self.add("load", ("const", header_tmp, idx))
             self.add("load", ("load", self.scratch[v], header_tmp))
 
-        # Vector temporaries (each length=8)
-        idx_vec = self.alloc_scratch("idx_vec", length=8)
-        val_vec = self.alloc_scratch("val_vec", length=8)
-        node_addr_vec = self.alloc_scratch("node_addr_vec", length=8)
-        node_val_vec = self.alloc_scratch("node_val_vec", length=8)
-        hash_tmp1_vec = self.alloc_scratch("hash_tmp1_vec", length=8)
-        hash_tmp2_vec = self.alloc_scratch("hash_tmp2_vec", length=8)
-        mod_vec = self.alloc_scratch("mod_vec", length=8)
-        add1_vec = self.alloc_scratch("add1_vec", length=8)
-        mask_vec = self.alloc_scratch("mask_vec", length=8)
+        def alloc_v8(name):
+            return self.alloc_scratch(name, length=8)
+
+        idx_a = alloc_v8("idx_a")
+        val_a = alloc_v8("val_a")
+        node_addr_a = alloc_v8("node_addr_a")
+        node_val_a = alloc_v8("node_val_a")
+        hash_tmp1_a = alloc_v8("hash_tmp1_a")
+        hash_tmp2_a = alloc_v8("hash_tmp2_a")
+        mod_a = alloc_v8("mod_a")
+        add1_a = alloc_v8("add1_a")
+        mask_a = alloc_v8("mask_a")
+
+        idx_b = alloc_v8("idx_b")
+        val_b = alloc_v8("val_b")
+        node_addr_b = alloc_v8("node_addr_b")
+        node_val_b = alloc_v8("node_val_b")
+        hash_tmp1_b = alloc_v8("hash_tmp1_b")
+        hash_tmp2_b = alloc_v8("hash_tmp2_b")
+        mod_b = alloc_v8("mod_b")
+        add1_b = alloc_v8("add1_b")
+        mask_b = alloc_v8("mask_b")
 
         # Broadcasted vector constants
         one_vec = self.scratch_const_vector(1, name="one_vec")
@@ -381,42 +401,68 @@ class KernelBuilder:
         one_const = self.scratch_const(1)
         two_const = self.scratch_const(2)
 
-        for vi in range(vec_iters):
-            i = vi * vec_step
-            i_const = self.scratch_const(i)
+        def emit_vec_round(idx_v, val_v, node_addr_v, node_val_v, h1, h2, mod_v, add1_v, mask_v):
+            body.append(("valu", ("+", node_addr_v, idx_v, forest_base_vec)))
+            for lane in range(8):
+                body.append(("load", ("load_offset", node_val_v, node_addr_v, lane)))
+            body.append(("valu", ("^", val_v, val_v, node_val_v)))
+            body.extend(self.build_hash_vector(val_v, h1, h2))
+            body.append(("valu", ("&", mod_v, val_v, one_vec)))
+            body.append(("valu", ("+", add1_v, mod_v, one_vec)))
+            body.append(("valu", ("multiply_add", idx_v, idx_v, two_vec, add1_v)))
+            body.append(("valu", ("<", mask_v, idx_v, n_nodes_vec)))
+            body.append(("valu", ("*", idx_v, idx_v, mask_v)))
 
-            body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
-            body.append(("load", ("vload", idx_vec, tmp_addr)))
-
-            body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], i_const)))
-            body.append(("load", ("vload", val_vec, tmp_addr2)))
-
-            # Process all rounds in registers to reduce vload/vstore overhead
-            for r in range(rounds):
-                # Compute addresses of node values: node_addr_vec = forest_base + idx_vec
-                body.append(("valu", ("+", node_addr_vec, idx_vec, forest_base_vec)))
-
-                # Gather node values: use 8 load_offset slots (one per lane)
-                for lane in range(8):
-                    body.append(("load", ("load_offset", node_val_vec, node_addr_vec, lane)))
-
-                # XOR value with node_val and compute hash (vectorized)
-                body.append(("valu", ("^", val_vec, val_vec, node_val_vec)))
-                body.extend(self.build_hash_vector(val_vec, hash_tmp1_vec, hash_tmp2_vec))
-
-                # Compute parity-based child: add1 = 1 + (val & 1) -> 1 if even, 2 if odd
-                body.append(("valu", ("&", mod_vec, val_vec, one_vec)))
-                body.append(("valu", ("+", add1_vec, mod_vec, one_vec)))
-
-                # idx = 2*idx + add1_vec via fused multiply_add (idx*two + add1)
-                body.append(("valu", ("multiply_add", idx_vec, idx_vec, two_vec, add1_vec)))
-
-                # idx = idx if idx < n_nodes else 0 via mask*idx (valu only; avoids flow vselect)
-                body.append(("valu", ("<", mask_vec, idx_vec, n_nodes_vec)))
-                body.append(("valu", ("*", idx_vec, idx_vec, mask_vec)))
-
-            body.append(("store", ("vstore", tmp_addr, idx_vec)))
-            body.append(("store", ("vstore", tmp_addr2, val_vec)))
+        vi = 0
+        while vi < vec_iters:
+            if vi + 1 < vec_iters:
+                i0 = vi * vec_step
+                i1 = (vi + 1) * vec_step
+                i0c = self.scratch_const(i0)
+                i1c = self.scratch_const(i1)
+                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i0c)))
+                body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], i0c)))
+                body.append(("load", ("vload", idx_a, tmp_addr)))
+                body.append(("load", ("vload", val_a, tmp_addr2)))
+                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i1c)))
+                body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], i1c)))
+                body.append(("load", ("vload", idx_b, tmp_addr)))
+                body.append(("load", ("vload", val_b, tmp_addr2)))
+                for _r in range(rounds):
+                    emit_vec_round(
+                        idx_a, val_a, node_addr_a, node_val_a,
+                        hash_tmp1_a, hash_tmp2_a, mod_a, add1_a, mask_a,
+                    )
+                    emit_vec_round(
+                        idx_b, val_b, node_addr_b, node_val_b,
+                        hash_tmp1_b, hash_tmp2_b, mod_b, add1_b, mask_b,
+                    )
+                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i0c)))
+                body.append(("store", ("vstore", tmp_addr, idx_a)))
+                body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], i0c)))
+                body.append(("store", ("vstore", tmp_addr2, val_a)))
+                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i1c)))
+                body.append(("store", ("vstore", tmp_addr, idx_b)))
+                body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], i1c)))
+                body.append(("store", ("vstore", tmp_addr2, val_b)))
+                vi += 2
+            else:
+                i = vi * vec_step
+                ic = self.scratch_const(i)
+                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], ic)))
+                body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], ic)))
+                body.append(("load", ("vload", idx_a, tmp_addr)))
+                body.append(("load", ("vload", val_a, tmp_addr2)))
+                for _r in range(rounds):
+                    emit_vec_round(
+                        idx_a, val_a, node_addr_a, node_val_a,
+                        hash_tmp1_a, hash_tmp2_a, mod_a, add1_a, mask_a,
+                    )
+                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], ic)))
+                body.append(("store", ("vstore", tmp_addr, idx_a)))
+                body.append(("alu", ("+", tmp_addr2, self.scratch["inp_values_p"], ic)))
+                body.append(("store", ("vstore", tmp_addr2, val_a)))
+                vi += 1
 
         if tail:
             start = vec_iters * vec_step
