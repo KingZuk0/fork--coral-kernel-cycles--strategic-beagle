@@ -363,7 +363,6 @@ class KernelBuilder:
         hash_tmp1_a = alloc_v8("hash_tmp1_a")
         hash_tmp2_a = alloc_v8("hash_tmp2_a")
         mod_a = alloc_v8("mod_a")
-        add1_a = alloc_v8("add1_a")
         mask_a = alloc_v8("mask_a")
 
         idx_b = alloc_v8("idx_b")
@@ -373,7 +372,6 @@ class KernelBuilder:
         hash_tmp1_b = alloc_v8("hash_tmp1_b")
         hash_tmp2_b = alloc_v8("hash_tmp2_b")
         mod_b = alloc_v8("mod_b")
-        add1_b = alloc_v8("add1_b")
         mask_b = alloc_v8("mask_b")
 
         # Broadcasted vector constants
@@ -405,17 +403,44 @@ class KernelBuilder:
         one_const = self.scratch_const(1)
         two_const = self.scratch_const(2)
 
-        def emit_vec_round(idx_v, val_v, node_addr_v, node_val_v, h1, h2, mod_v, add1_v, mask_v):
+        def emit_vec_round(idx_v, val_v, node_addr_v, node_val_v, h1, h2, mod_v, mask_v):
             body.append(("valu", ("+", node_addr_v, idx_v, forest_base_vec)))
             for lane in range(8):
                 body.append(("load", ("load_offset", node_val_v, node_addr_v, lane)))
             body.append(("valu", ("^", val_v, val_v, node_val_v)))
             body.extend(self.build_hash_vector(val_v, h1, h2))
             body.append(("valu", ("&", mod_v, val_v, one_vec)))
-            body.append(("valu", ("+", add1_v, mod_v, one_vec)))
-            body.append(("valu", ("multiply_add", idx_v, idx_v, two_vec, add1_v)))
+            body.append(("valu", ("+", mod_v, mod_v, one_vec)))
+            body.append(("valu", ("multiply_add", idx_v, idx_v, two_vec, mod_v)))
             body.append(("valu", ("<", mask_v, idx_v, n_nodes_vec)))
             body.append(("valu", ("*", idx_v, idx_v, mask_v)))
+
+        def emit_vec_round_paired(
+            idx_a, val_a, node_addr_a, node_val_a, h1a, h2a, mod_a, mask_a,
+            idx_b, val_b, node_addr_b, node_val_b, h1b, h2b, mod_b, mask_b,
+        ):
+            body.append(("valu", ("+", node_addr_a, idx_a, forest_base_vec)))
+            body.append(("valu", ("+", node_addr_b, idx_b, forest_base_vec)))
+            for lane in range(8):
+                body.append(("load", ("load_offset", node_val_a, node_addr_a, lane)))
+                body.append(("load", ("load_offset", node_val_b, node_addr_b, lane)))
+            body.append(("valu", ("^", val_a, val_a, node_val_a)))
+            body.append(("valu", ("^", val_b, val_b, node_val_b)))
+            ha = self.build_hash_vector(val_a, h1a, h2a)
+            hb = self.build_hash_vector(val_b, h1b, h2b)
+            for sa, sb in zip(ha, hb):
+                body.append(sa)
+                body.append(sb)
+            body.append(("valu", ("&", mod_a, val_a, one_vec)))
+            body.append(("valu", ("&", mod_b, val_b, one_vec)))
+            body.append(("valu", ("+", mod_a, mod_a, one_vec)))
+            body.append(("valu", ("+", mod_b, mod_b, one_vec)))
+            body.append(("valu", ("multiply_add", idx_a, idx_a, two_vec, mod_a)))
+            body.append(("valu", ("multiply_add", idx_b, idx_b, two_vec, mod_b)))
+            body.append(("valu", ("<", mask_a, idx_a, n_nodes_vec)))
+            body.append(("valu", ("<", mask_b, idx_b, n_nodes_vec)))
+            body.append(("valu", ("*", idx_a, idx_a, mask_a)))
+            body.append(("valu", ("*", idx_b, idx_b, mask_b)))
 
         vi = 0
         while vi < vec_iters:
@@ -433,13 +458,11 @@ class KernelBuilder:
                 body.append(("load", ("vload", idx_b, tmp_i1)))
                 body.append(("load", ("vload", val_b, tmp_v1)))
                 for _r in range(rounds):
-                    emit_vec_round(
+                    emit_vec_round_paired(
                         idx_a, val_a, node_addr_a, node_val_a,
-                        hash_tmp1_a, hash_tmp2_a, mod_a, add1_a, mask_a,
-                    )
-                    emit_vec_round(
+                        hash_tmp1_a, hash_tmp2_a, mod_a, mask_a,
                         idx_b, val_b, node_addr_b, node_val_b,
-                        hash_tmp1_b, hash_tmp2_b, mod_b, add1_b, mask_b,
+                        hash_tmp1_b, hash_tmp2_b, mod_b, mask_b,
                     )
                 body.append(("store", ("vstore", tmp_i0, idx_a)))
                 body.append(("store", ("vstore", tmp_v0, val_a)))
@@ -456,7 +479,7 @@ class KernelBuilder:
                 for _r in range(rounds):
                     emit_vec_round(
                         idx_a, val_a, node_addr_a, node_val_a,
-                        hash_tmp1_a, hash_tmp2_a, mod_a, add1_a, mask_a,
+                        hash_tmp1_a, hash_tmp2_a, mod_a, mask_a,
                     )
                 body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], ic)))
                 body.append(("store", ("vstore", tmp_addr, idx_a)))
